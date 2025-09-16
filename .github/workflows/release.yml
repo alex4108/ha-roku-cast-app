@@ -39,24 +39,60 @@ jobs:
           echo "tag_name=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
           echo "release_name=${{ github.event.inputs.release_name }}" >> $GITHUB_OUTPUT
           echo "prerelease=${{ github.event.inputs.prerelease }}" >> $GITHUB_OUTPUT
+          echo "version_type=manual" >> $GITHUB_OUTPUT
         elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-          # Tagged release
-          echo "tag_name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-          echo "release_name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          # Tagged release - can be major, minor, or patch
+          tag_name=${GITHUB_REF#refs/tags/}
+          echo "tag_name=$tag_name" >> $GITHUB_OUTPUT
+          echo "release_name=$tag_name" >> $GITHUB_OUTPUT
           echo "prerelease=false" >> $GITHUB_OUTPUT
+          echo "version_type=tagged" >> $GITHUB_OUTPUT
         else
-          # Push to main branch - create pre-release with timestamp
-          timestamp=$(date +'%Y%m%d-%H%M%S')
-          short_sha=${GITHUB_SHA::7}
-          echo "tag_name=dev-${timestamp}-${short_sha}" >> $GITHUB_OUTPUT
-          echo "release_name=Development Build ${timestamp}" >> $GITHUB_OUTPUT
-          echo "prerelease=true" >> $GITHUB_OUTPUT
+          # Push to main branch - auto-bump patch version
+          echo "version_type=patch_bump" >> $GITHUB_OUTPUT
+          
+          # Get the latest tag (if any) to determine next patch version
+          if git describe --tags --abbrev=0 >/dev/null 2>&1; then
+            latest_tag=$(git describe --tags --abbrev=0)
+            echo "Latest tag found: $latest_tag"
+            
+            # Extract version numbers (remove 'v' prefix if present)
+            version=${latest_tag#v}
+            
+            # Split version into major.minor.patch
+            IFS='.' read -r major minor patch <<< "$version"
+            
+            # Increment patch version
+            new_patch=$((patch + 1))
+            new_version="v${major}.${minor}.${new_patch}"
+          else
+            # No tags exist, start with v0.0.1
+            new_version="v0.0.1"
+            echo "No previous tags found, starting with $new_version"
+          fi
+          
+          echo "tag_name=$new_version" >> $GITHUB_OUTPUT
+          echo "release_name=$new_version (Auto Patch)" >> $GITHUB_OUTPUT
+          echo "prerelease=false" >> $GITHUB_OUTPUT
         fi
         
         # Set release name to tag if empty (for manual trigger)
         if [ -z "${{ github.event.inputs.release_name }}" ] && [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
           echo "release_name=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
         fi
+    
+    - name: Create and push auto-generated tag (for main branch pushes)
+      if: steps.vars.outputs.version_type == 'patch_bump'
+      run: |
+        # Configure git for the action
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        
+        # Create the new tag
+        git tag ${{ steps.vars.outputs.tag_name }}
+        git push origin ${{ steps.vars.outputs.tag_name }}
+        
+        echo "Created and pushed tag: ${{ steps.vars.outputs.tag_name }}"
     
     - name: Create release zip
       id: create_zip
@@ -87,11 +123,10 @@ jobs:
     - name: Generate changelog
       id: changelog
       run: |
-        # Simple changelog generation - you can enhance this
         echo "## Changes" > CHANGELOG.md
         echo "" >> CHANGELOG.md
         
-        if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+        if [ "${{ steps.vars.outputs.version_type }}" = "tagged" ]; then
           # Tagged release changelog
           if git describe --tags --abbrev=0 HEAD^ >/dev/null 2>&1; then
             last_tag=$(git describe --tags --abbrev=0 HEAD^)
@@ -101,16 +136,29 @@ jobs:
           else
             echo "Initial release" >> CHANGELOG.md
           fi
-        elif [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
-          # Development build from main branch
-          echo "**⚠️ Development Build** - This is a pre-release build from the main branch." >> CHANGELOG.md
+          
+        elif [ "${{ steps.vars.outputs.version_type }}" = "patch_bump" ]; then
+          # Auto patch bump from main branch
+          echo "**🔄 Automatic Patch Release** - Auto-incremented from main branch push." >> CHANGELOG.md
           echo "" >> CHANGELOG.md
-          echo "Recent changes:" >> CHANGELOG.md
+          
+          # Show changes since last tag
+          if git describe --tags --abbrev=0 HEAD^ >/dev/null 2>&1; then
+            last_tag=$(git describe --tags --abbrev=0 HEAD^)
+            echo "Changes since $last_tag:" >> CHANGELOG.md
+            echo "" >> CHANGELOG.md
+            git log --pretty=format:"- %s (%an)" $last_tag..HEAD >> CHANGELOG.md
+          else
+            echo "Recent changes:" >> CHANGELOG.md
+            echo "" >> CHANGELOG.md
+            git log --pretty=format:"- %s (%an)" -10 >> CHANGELOG.md
+          fi
+          
           echo "" >> CHANGELOG.md
-          git log --pretty=format:"- %s (%an)" -10 >> CHANGELOG.md
-          echo "" >> CHANGELOG.md
+          echo "**Note:** This version was automatically created from a push to main. For major or minor version changes, create a git tag manually." >> CHANGELOG.md
           echo "" >> CHANGELOG.md
           echo "**Commit:** \`${GITHUB_SHA::7}\`" >> CHANGELOG.md
+          
         else
           # Manual workflow dispatch
           echo "Manual release" >> CHANGELOG.md
