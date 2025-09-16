@@ -1,0 +1,153 @@
+name: Create Release
+
+on:
+  push:
+    tags:
+      - 'v*'  # Triggers on version tags like v1.0.0, v2.1.3, etc.
+    branches:
+      - main  # Triggers on pushes to main branch
+  workflow_dispatch:  # Allows manual triggering from GitHub UI
+    inputs:
+      tag_name:
+        description: 'Tag name for the release'
+        required: true
+        default: 'v1.0.0'
+      release_name:
+        description: 'Release name'
+        required: false
+        default: ''
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Fetch all history for proper changelog generation
+    
+    - name: Set release variables
+      id: vars
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          echo "tag_name=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
+          echo "release_name=${{ github.event.inputs.release_name }}" >> $GITHUB_OUTPUT
+          echo "prerelease=${{ github.event.inputs.prerelease }}" >> $GITHUB_OUTPUT
+        elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+          # Tagged release
+          echo "tag_name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          echo "release_name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          echo "prerelease=false" >> $GITHUB_OUTPUT
+        else
+          # Push to main branch - create pre-release with timestamp
+          timestamp=$(date +'%Y%m%d-%H%M%S')
+          short_sha=${GITHUB_SHA::7}
+          echo "tag_name=dev-${timestamp}-${short_sha}" >> $GITHUB_OUTPUT
+          echo "release_name=Development Build ${timestamp}" >> $GITHUB_OUTPUT
+          echo "prerelease=true" >> $GITHUB_OUTPUT
+        fi
+        
+        # Set release name to tag if empty (for manual trigger)
+        if [ -z "${{ github.event.inputs.release_name }}" ] && [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          echo "release_name=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Create release zip
+      id: create_zip
+      run: |
+        # Create a clean directory for the release
+        mkdir -p release-build
+        
+        # Copy all files except .git, .github, and other development files
+        rsync -av --progress . release-build/ \
+          --exclude='.git*' \
+          --exclude='.github/' \
+          --exclude='node_modules/' \
+          --exclude='*.log' \
+          --exclude='.DS_Store' \
+          --exclude='Thumbs.db' \
+          --exclude='release-build/'
+        
+        # Create the zip file
+        cd release-build
+        zip -r "../ha-roku-cast-${{ steps.vars.outputs.tag_name }}.zip" .
+        cd ..
+        
+        # Get file size for release notes
+        file_size=$(stat -c%s "ha-roku-cast-${{ steps.vars.outputs.tag_name }}.zip")
+        echo "zip_size=$file_size" >> $GITHUB_OUTPUT
+        echo "zip_filename=ha-roku-cast-${{ steps.vars.outputs.tag_name }}.zip" >> $GITHUB_OUTPUT
+    
+    - name: Generate changelog
+      id: changelog
+      run: |
+        # Simple changelog generation - you can enhance this
+        echo "## Changes" > CHANGELOG.md
+        echo "" >> CHANGELOG.md
+        
+        if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+          # Tagged release changelog
+          if git describe --tags --abbrev=0 HEAD^ >/dev/null 2>&1; then
+            last_tag=$(git describe --tags --abbrev=0 HEAD^)
+            echo "Changes since $last_tag:" >> CHANGELOG.md
+            echo "" >> CHANGELOG.md
+            git log --pretty=format:"- %s (%an)" $last_tag..HEAD >> CHANGELOG.md
+          else
+            echo "Initial release" >> CHANGELOG.md
+          fi
+        elif [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+          # Development build from main branch
+          echo "**⚠️ Development Build** - This is a pre-release build from the main branch." >> CHANGELOG.md
+          echo "" >> CHANGELOG.md
+          echo "Recent changes:" >> CHANGELOG.md
+          echo "" >> CHANGELOG.md
+          git log --pretty=format:"- %s (%an)" -10 >> CHANGELOG.md
+          echo "" >> CHANGELOG.md
+          echo "" >> CHANGELOG.md
+          echo "**Commit:** \`${GITHUB_SHA::7}\`" >> CHANGELOG.md
+        else
+          # Manual workflow dispatch
+          echo "Manual release" >> CHANGELOG.md
+        fi
+        
+        echo "" >> CHANGELOG.md
+        echo "## Installation" >> CHANGELOG.md
+        echo "" >> CHANGELOG.md
+        echo "1. Download the \`${{ steps.create_zip.outputs.zip_filename }}\` file" >> CHANGELOG.md
+        echo "2. Extract to your Roku development environment" >> CHANGELOG.md
+        echo "3. Side-load to your Roku device using the Roku Developer Tools" >> CHANGELOG.md
+        echo "" >> CHANGELOG.md
+        echo "**File Size:** $(numfmt --to=iec ${{ steps.create_zip.outputs.zip_size }})" >> CHANGELOG.md
+        
+        # Set output for release body
+        {
+          echo 'release_body<<EOF'
+          cat CHANGELOG.md
+          echo EOF
+        } >> $GITHUB_OUTPUT
+    
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ steps.vars.outputs.tag_name }}
+        name: ${{ steps.vars.outputs.release_name }}
+        body: ${{ steps.changelog.outputs.release_body }}
+        files: ${{ steps.create_zip.outputs.zip_filename }}
+        prerelease: ${{ steps.vars.outputs.prerelease == 'true' }}
+        draft: false
+        generate_release_notes: false  # We're providing our own notes
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Upload release artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-zip
+        path: ${{ steps.create_zip.outputs.zip_filename }}
+        retention-days: 30
