@@ -8,7 +8,7 @@ Roku app to allow Home Assistant integration video stream cameras and other medi
 In order to side load an application on Roku you need to follow a few steps:
 
 1. Set up your Roku device to enable **Developer Settings** on your Roku device (Step 1 of [these instructions](https://developer.roku.com/en-gb/docs/developer-program/getting-started/developer-setup.md))
-2. Create a zip file with the contents of this repository or download the zip from the [Releases]((https://github.com/lvcabral/ha-roku-cast-app/releases) page
+2. Create a zip file with the contents of this repository or download the zip from the [Releases](https://github.com/lvcabral/ha-roku-cast-app/releases) page
 3. Access the **Development Application Installer** to upload and install the app package (Steps 2 and 3 of [these instructions](https://developer.roku.com/en-gb/docs/developer-program/getting-started/developer-setup.md))
 
 A couple of notes:
